@@ -3,31 +3,15 @@
 # All credit to Greg Neagle for allowing Lion updates to be integrated as well
 # This script detects changes in the MAC address of the computer it runs on and modifies the computer record in MCX accordingly
 # Additionally, if MCX management varies between laptops and desktops, it only updates the applicable record and removes the other 
-
-# First, declare computer record GUIDs, since management keys off of it
-local_desktop_GUID="DD24623B-37E9-48EE-A726-D2F284921882"
-local_laptop_GUID="63A0C4D0-C3B6-486F-997F-4F9D68DEFAA8"
-
+# set -x
 changedMCX=false
 
-# Verify GUID declared above is present in computer records on disk
-current_local_desktop_GUID=`/usr/bin/dscl /Local/MCX -read /Computers/local_desktop GeneratedUID | cut -f2 -d " "`
-current_local_laptop_GUID=`/usr/bin/dscl /Local/MCX -read /Computers/local_laptop GeneratedUID | cut -f2 -d " "`
-# If they aren't, fix and refresh
-if [ "$current_local_desktop_GUID" != "$local_desktop_GUID" ] ; then
-    echo "Updating GUID for /Computers/local_desktop..."
-    echo "was: $current_local_desktop_GUID"
-    echo "now: $local_desktop_GUID"
-    /usr/bin/dscl /Local/MCX -create /Computers/local_desktop GeneratedUID $local_desktop_GUID
-    changedMCX=true
-fi
-if [ "$current_local_laptop_GUID" != "$local_laptop_GUID" ] ; then  
-    echo "Updating GUID for /Computers/local_laptop..."
-        echo "was: $current_local_laptop_GUID"
-        echo "now: $local_laptop_GUID"
-    /usr/bin/dscl /Local/MCX -create /Computers/local_laptop GeneratedUID $local_laptop_GUID
-    changedMCX=true
-fi
+# get the major OS version, we need it a few places later
+# 9 = Leopard
+# 10 = Snow Leopard
+# 11 = Lion
+# 12 = Mountain Lion
+OSVERS=`/usr/bin/uname -r | /usr/bin/cut -d'.' -f1`
 
 # check what the currently-running computers MAC address is
 macAddress=`/sbin/ifconfig en0 | /usr/bin/grep 'ether' | /usr/bin/sed "s/^[[:space:]]ether //"  | cut -f1 -d " "`
@@ -49,11 +33,19 @@ if [ "$storedMacAddress" != "$macAddress" ] ; then
     echo "was: $storedMacAddress"
     echo "now: $macAddress"
 # shove in the right value for the right computer record
+# Mountain Lion doesn't let us use dscl to write to the /Local/MCX node, 
+# so we will update the raw plist with PlistBuddy
+if [ "$OSVERS" -lt "11" ] ; then
     /usr/bin/dscl /Local/MCX -create /Computers/$computerRecordName ENetAddress $macAddress
     /usr/bin/dscl /Local/MCX -create /Computers/$computerRecordName comment "Auto-Created"
 # prune the unused one
     /usr/bin/dscl /Local/MCX -delete /Computers/$otherRecordName ENetAddress
     changedMCX=true
+else
+    /usr/libexec/PlistBuddy -c "Delete :en_address: string" /private/var/db/dslocal/nodes/MCX/computers/$computerRecordName.plist
+    /usr/libexec/PlistBuddy -c "Add :en_address: string $macAddress" /private/var/db/dslocal/nodes/MCX/computers/$computerRecordName.plist
+fi
+
 fi
 
 storedHardwareUUID=`/usr/bin/dscl /Local/MCX -read /Computers/$computerRecordName hardwareuuid | cut -f2 -d " "`
@@ -62,13 +54,18 @@ if [ "$storedHardwareUUID" != "$thisHardwareUUID" ] ; then
         echo "Updating Hardware UUID for /Computers/$computerRecordName..."
         echo "was: $storedHardwareUUID"
         echo "now: $thisHardwareUUID"
-    if [ "$thisHardwareUUID" ] ; then
-            /usr/bin/dscl /Local/MCX -create /Computers/$computerRecordName hardwareuuid "$thisHardwareUUID"
-        else
-        /usr/bin/dscl /Local/MCX -delete /Computers/$computerRecordName hardwareuuid
+    if [ "$OSVERS" -lt "11" ] ; then
+        if [ "$thisHardwareUUID" ] ; then
+                /usr/bin/dscl /Local/MCX -create /Computers/$computerRecordName hardwareuuid "$thisHardwareUUID"
+            else
+            /usr/bin/dscl /Local/MCX -delete /Computers/$computerRecordName hardwareuuid
+        fi
+            /usr/bin/dscl /Local/MCX -delete /Computers/$otherRecordName hardwareuuid
+        changedMCX=true
+    else
+        /usr/libexec/PlistBuddy -c "Delete :hardwareuuid: string" /private/var/db/dslocal/nodes/MCX/computers/$computerRecordName.plist
+        /usr/libexec/PlistBuddy -c "Add :hardwareuuid: string $thisHardwareUUID" /private/var/db/dslocal/nodes/MCX/computers/$computerRecordName.plist
     fi
-        /usr/bin/dscl /Local/MCX -delete /Computers/$otherRecordName hardwareuuid
-    changedMCX=true
 fi
 
 if [ "$changedMCX" == "true" ] ; then
